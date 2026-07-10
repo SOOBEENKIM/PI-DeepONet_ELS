@@ -1,0 +1,17 @@
+# Data & artifacts
+data/
+outputs/
+figures/
+*.parquet
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Environment & secrets
+.env
+
+# Large archives
+*.tar.gz
