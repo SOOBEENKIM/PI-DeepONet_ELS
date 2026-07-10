@@ -85,3 +85,30 @@ Individual steps: `python -m els_pricing.data_prep`, `... market_data`,
 
 Discounting uses per-observation NS term-structure factors (v2 §2, `disc_*`).
 See `figures/` for calibration, moneyness-error, MC-vs-DeepONet, fair−MC, speed.
+
+## Stage-2 model comparison: MLP vs tree (`margin_gbr.py`)
+
+`margin_gbr.py` is a drop-in alternative to `margin_mlp.py`: same
+`compute_recent_margin`, `features.tabular_matrix`, and
+`splits.walk_forward_folds` / `train_valid_split`, but Stage-2 residual
+prediction uses sklearn `GradientBoostingRegressor` (huber loss) instead of
+the MLP — no xgboost dependency. OOS, same folds:
+
+| Stage-2 | R² | MAPE |
+|---|---|---|
+| MC only | -1.537 | 6.65% |
+| MC + recent_margin (no model) | 0.674 | 2.12% |
+| Final, MLP (`margin_mlp.py`) | 0.627 | 2.28% |
+| Final, tree, 500 est. (fixed) | 0.749 | 1.83% |
+| Final, tree, 2000 est. + validation-monitored early stop | 0.737 | 1.86% |
+
+The tree residual model beats both the MLP and the `recent_margin`-only
+baseline; the MLP does not (it lands *below* MC+recent, i.e. net negative
+contribution — 3 of 4 folds have negative OOS resid R²). At 2000 estimators
+with `patience=50` the validation huber loss never actually plateaus (all
+4 folds still improving at the cap), and pushing past 500 trees makes fold 3
+worse out-of-sample (resid R² **+0.083 → −0.043**) despite validation loss
+still falling — a sign the random (non-time-ordered) `train_valid_split`
+under-detects overfitting relative to the true walk-forward OOS fold. 500
+estimators (itself not an early-stopped optimum, just a smaller cap) is the
+better result of the two tree configs tried so far.
