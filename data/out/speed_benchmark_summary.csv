@@ -1,0 +1,2 @@
+﻿n_products,loss_type,mc_per_product_sec(소표본n=200),mc_total_sec(소표본환산),"mc_total_sec(전수실측,참고)",deeponet_total_sec(배치forward),deeponet_per_product_us,speedup_x(소표본환산기준),"speedup_x(전수실측기준,참고)",price_corr,price_mae,price_bias(pred-true)
+9392,mae,18.193806753000537,170876.23302418104,173079.89434680046,0.03836449998198077,4.0848062161393495,4454019.552045225,4511459.667872473,0.9759256103731286,0.0043078618846580565,0.002499412725353749
