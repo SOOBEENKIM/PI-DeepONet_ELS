@@ -3,3 +3,5 @@ data/cache/
 *.parquet
 __pycache__/
 *.pyc
+*.log
+run_*.sh
