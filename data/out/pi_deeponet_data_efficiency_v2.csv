@@ -1,0 +1,7 @@
+﻿tag,kind,data_frac,lambda_pde,n_seeds,R2_mean,R2_std,MAPE_mean,MAPE_std,bp_error_mean,bp_error_std,Spearman_mean,Spearman_std
+dataeff_PI_frac0.25,PI,0.25,0.01,3,0.9392,0.025,0.0048,0.0009,46.0,8.2,0.9781,0.0064
+dataeff_PI_frac0.5,PI,0.5,0.01,3,0.8995,0.0517,0.0055,0.0012,53.3,11.9,0.9754,0.0089
+dataeff_PI_frac1.0,PI,1.0,0.01,3,0.9572,0.009,0.0042,0.0004,40.3,4.2,0.9847,0.0017
+dataeff_plain_frac0.25,plain,0.25,0.0,3,0.9501,0.0152,0.0045,0.0004,43.2,3.7,0.9819,0.0031
+dataeff_plain_frac0.5,plain,0.5,0.0,3,0.9036,0.0467,0.0055,0.0014,52.6,13.0,0.9738,0.0116
+dataeff_plain_frac1.0,plain,1.0,0.0,3,0.9277,0.0334,0.0049,0.001,47.5,9.8,0.9769,0.0078

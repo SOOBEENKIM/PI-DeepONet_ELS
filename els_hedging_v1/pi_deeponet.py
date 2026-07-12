@@ -48,10 +48,16 @@ X_LOW, X_HIGH = float(np.log(0.3)), float(np.log(1.7))   # collocation 로그가
 N_COL_DEFAULT = 24         # 상품당 collocation점. 논문/지시서 예시(64)에서 compute 비용으로 축소 - §runtime 문서화
 N_COL_TERM_DEFAULT = 8     # tau=0 terminal 근사 점
 
+# epochs/patience 25/10 (기존 100/15에서 하향): diag_convergence_v2.jsonl 진단으로 확정된 픽스 -
+# train_pi_deeponet 독스트링 참조. "정확성 v2" 재정비 이후 canonical 기본값.
+EPOCHS_DEFAULT = 25
+PATIENCE_DEFAULT = 10
+
 LAMBDA_GRID = (0.0, 0.01, 0.1, 1.0)
 DATA_FRAC_GRID = (0.25, 0.5, 1.0)
 
 CACHE_PATH = C.OUT_DIR / "_pi_deeponet_runs_cache.jsonl"
+CACHE_PATH_V2 = C.OUT_DIR / "_pi_deeponet_runs_cache_v2.jsonl"
 
 torch.manual_seed(C.SEED)
 
@@ -179,11 +185,24 @@ def pde_residual(model, branch_emb_flat, x1, x2, x3, tau,
 
 def train_pi_deeponet(train_df, target_col="MC", lambda_pde=0.0, lambda_term=0.0,
                        n_col=N_COL_DEFAULT, n_col_term=N_COL_TERM_DEFAULT, data_frac=1.0,
-                       val_frac=0.1, epochs=100, lr=1e-3, batch_size=256, patience=15,
-                       grad_clip=5.0, lr_gamma=0.97, loss_type="mae", shuffle_split=True,
-                       seed=C.SEED, verbose=False):
+                       val_frac=0.1, epochs=EPOCHS_DEFAULT, lr=1e-3, batch_size=256,
+                       patience=PATIENCE_DEFAULT, grad_clip=5.0, lr_gamma=0.97, loss_type="mae",
+                       shuffle_split=True, seed=C.SEED, verbose=False):
     """재현성 픽스(v2 관례): 함수 시작부에서 torch/numpy 모두 재시딩. 이 함수 호출은 프로세스 내
-    다른 어떤 호출과도 RNG 상태를 공유하지 않음(v2 §torch.manual_seed 1회시딩 버그 교훈)."""
+    다른 어떤 호출과도 RNG 상태를 공유하지 않음(v2 §torch.manual_seed 1회시딩 버그 교훈).
+
+    ⚠ epochs/patience 기본값 25/10 (기존 100/15에서 하향 - §진단으로 확정된 픽스):
+    fold별 학습곡선을 epoch단위로 계측한 결과(diag_convergence_v2.jsonl), val_loss(랜덤 shuffle
+    train/val split에서 계산)는 "국면"이 어려운 fold(fold2)에서 300epoch 내내 단조 개선되는데
+    test R2는 epoch~15-25에서 정점(~0.85) 찍고 이후 붕괴(epoch299 R2=0.36) - 즉 val_loss가
+    train기간 regime에 과적합되는 것을 test기간(다른 regime)에 대한 신호로 못 잡아냄
+    (patience 기반 조기종료가 전혀 발동하지 않음 - val_loss가 계속 "개선"되므로).
+    반면 정상 fold(fold4)는 epoch~20에서 이미 300epoch 점근값의 99%(R2 0.982 vs 0.986)에 도달 -
+    더 오래 학습해도 손해가 거의 없음. 따라서 "짧게 캡"이 두 경우 모두에 최선:
+    어려운 fold는 붕괴 전에 멈추고, 쉬운 fold는 손해가 미미함. LR 감쇠(0.97^epoch)를 완만하게
+    바꾸거나(constant LR) patience만 조정하는 것으로는 해결 안 됨(같은 진단 참고 - constant LR은
+    오히려 더 불안정, ReduceLROnPlateau는 완화하지만 완전히 막지는 못함) - epoch 예산 자체를
+    줄이는 것이 유일하게 확실한 픽스."""
     torch.manual_seed(seed)
     rng = np.random.RandomState(seed)
 
@@ -364,42 +383,42 @@ def _load_don():
     return sort_chronological(don)
 
 
-def _append_cache(record):
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_PATH, "a", encoding="utf-8") as f:
+def _append_cache(record, cache_path=CACHE_PATH):
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
-def _load_cache():
-    """(tag,fold,data_frac) 별로 마지막(최신) 기록만 남긴다 - 서로 다른 CLI 호출(정합체크 +
+def _load_cache(cache_path=CACHE_PATH):
+    """(tag,fold,data_frac,seed) 별로 마지막(최신) 기록만 남긴다 - 서로 다른 CLI 호출(정합체크 +
     lambda-scan 등)이 같은 config를 중복 실행해도 pooled 집계에서 이중계산되지 않도록."""
-    if not CACHE_PATH.exists():
+    if not cache_path.exists():
         return []
-    with open(CACHE_PATH, encoding="utf-8") as f:
+    with open(cache_path, encoding="utf-8") as f:
         raw = [json.loads(line) for line in f if line.strip()]
     dedup = {}
     for r in raw:
-        key = (r.get("tag"), r.get("fold"), r.get("data_frac"))
+        key = (r.get("tag"), r.get("fold"), r.get("data_frac"), r.get("seed", C.SEED))
         dedup[key] = r
     return list(dedup.values())
 
 
 def _run_one(don_df, folds, fold_ids, lambda_pde, lambda_term, data_frac, loss_type,
-             epochs, patience, batch_size, n_col, tag, resume=True):
+             epochs, patience, batch_size, n_col, tag, resume=True, seed=C.SEED, cache_path=CACHE_PATH):
     """folds 중 fold_ids에 해당하는 fold만 학습·평가해 레코드 리스트 반환(+JSONL cache 저장).
-    resume=True(기본)면 (tag,fold,data_frac)이 이미 캐시에 있으면 재학습 없이 캐시값을 재사용
+    resume=True(기본)면 (tag,fold,data_frac,seed)이 이미 캐시에 있으면 재학습 없이 캐시값을 재사용
     - 장시간 실험이 중간에 죽어도(background 킬 등) 이어서 돌릴 수 있게(§재현성과 무관, 순수 체크포인트)."""
     from .metrics import compute_metrics
     cached_by_key = {}
     if resume:
-        for r in _load_cache():
-            cached_by_key[(r.get("tag"), r.get("fold"), r.get("data_frac"))] = r
+        for r in _load_cache(cache_path):
+            cached_by_key[(r.get("tag"), r.get("fold"), r.get("data_frac"), r.get("seed", C.SEED))] = r
 
     records = []
     for fid in fold_ids:
-        key = (tag, fid, data_frac)
+        key = (tag, fid, data_frac, seed)
         if resume and key in cached_by_key:
-            log.info(f"[{tag}] fold={fid} data_frac={data_frac}: 캐시 재사용(스킵) "
+            log.info(f"[{tag}] fold={fid} data_frac={data_frac} seed={seed}: 캐시 재사용(스킵) "
                       f"R2={cached_by_key[key]['r2']:.4f}")
             records.append(cached_by_key[key])
             continue
@@ -410,20 +429,21 @@ def _run_one(don_df, folds, fold_ids, lambda_pde, lambda_term, data_frac, loss_t
         model, scaler, pde_log = train_pi_deeponet(
             train_df, target_col="MC", lambda_pde=lambda_pde, lambda_term=lambda_term,
             data_frac=data_frac, loss_type=loss_type, epochs=epochs, patience=patience,
-            batch_size=batch_size, n_col=n_col)
+            batch_size=batch_size, n_col=n_col, seed=seed)
         train_sec = time.perf_counter() - t0
         pred = predict_pi_deeponet(model, scaler, test_df)
         m = compute_metrics(test_df["MC"], pred)
         rec = {"tag": tag, "fold": fid, "lambda_pde": lambda_pde, "lambda_term": lambda_term,
-               "data_frac": data_frac, "loss_type": loss_type, "train_seconds": round(train_sec, 1),
+               "data_frac": data_frac, "loss_type": loss_type, "seed": seed,
+               "train_seconds": round(train_sec, 1),
                "n_epochs_ran": len(pde_log), "final_l_pde": pde_log[-1]["l_pde"] if pde_log else 0.0,
                **m}
-        log.info(f"[{tag}] fold={fid} lambda_pde={lambda_pde} data_frac={data_frac}: "
+        log.info(f"[{tag}] fold={fid} lambda_pde={lambda_pde} data_frac={data_frac} seed={seed}: "
                   f"R2={m['r2']:.4f} MAPE={m.get('mape', float('nan')):.4%} "
                   f"bp={m.get('bp_error', float('nan')):.1f} Spearman={m['spearman']:.4f} "
                   f"({train_sec:.1f}s, {len(pde_log)} epochs)")
         records.append(rec)
-        _append_cache(rec)
+        _append_cache(rec, cache_path)
     return records
 
 
@@ -654,6 +674,235 @@ def _make_figures(best_lam, epochs, patience, batch_size, n_col, fold=4):
     log.info(f"그림 저장 완료 -> {fig_dir}/pi_deeponet_0{{1,2,3}}_*.png")
 
 
+# ---------------------------------------------------------------------------
+# v2 (정확성 재정비): epochs/patience 픽스 검증 + 다중시드 재평가.
+# 기존 CACHE_PATH/산출물은 절대 건드리지 않고 CACHE_PATH_V2 + *_v2.csv로 완전히 분리.
+# ---------------------------------------------------------------------------
+
+def _validate_monotonicity_v2(don_df, folds, epochs, patience, batch_size, n_col, seed=C.SEED):
+    """§3: plain(lambda=0)이 새 recipe(epochs/patience 하향)에서 데이터효율에 대해 단조(100%>=50%>=25%)
+    회복됐는지 단일시드로 우선 확인 (빠른 검증 - 본 다중시드 실험 전 게이트)."""
+    log.info(f"=== v2 검증: plain 단조성(데이터효율) - epochs={epochs} patience={patience} seed={seed} ===")
+    rows = []
+    for frac in DATA_FRAC_GRID:
+        tag = f"dataeff_plain_frac{frac}"
+        recs = _run_one(don_df, folds, [1, 2, 3, 4], lambda_pde=0.0, lambda_term=0.0, data_frac=frac,
+                         loss_type="mae", epochs=epochs, patience=patience, batch_size=batch_size,
+                         n_col=n_col, tag=tag, seed=seed, cache_path=CACHE_PATH_V2)
+        from .metrics import summarize_folds
+        pooled = summarize_folds(recs)
+        rows.append({"data_frac": frac, "R2": pooled["r2"], "MAPE": pooled["mape"],
+                      "bp_error": pooled["bp_error"], "Spearman": pooled["spearman"]})
+    df = pd.DataFrame(rows).sort_values("data_frac")
+    r2_by_frac = dict(zip(df["data_frac"], df["R2"]))
+    monotonic = (r2_by_frac[1.0] >= r2_by_frac[0.5] - 1e-9) and (r2_by_frac[0.5] >= r2_by_frac[0.25] - 1e-9)
+    log.info("\nplain 데이터효율(v2 recipe, seed=%s):\n%s" % (seed, df.to_string(index=False)))
+    log.info(f"=> 단조(100%%>=50%%>=25%%) 회복 여부 = {monotonic} "
+              f"(R2: 25%%={r2_by_frac[0.25]:.4f} 50%%={r2_by_frac[0.5]:.4f} 100%%={r2_by_frac[1.0]:.4f})")
+    df.to_csv(C.OUT_DIR / "pi_deeponet_monotonicity_check_v2.csv", index=False, encoding="utf-8-sig")
+    return monotonic, df
+
+
+def _lambda_scan_v2(don_df, folds, epochs, patience, batch_size, n_col, seeds):
+    """§4 첫 단계: 새 recipe로 lambda_pde 그리드를 다중시드(seeds)로 재실행."""
+    from .metrics import summarize_folds
+    log.info(f"=== v2: lambda_pde 그리드 다중시드({seeds}) 재평가 ===")
+    all_records = []
+    for seed in seeds:
+        for lam in LAMBDA_GRID:
+            tag = "plain(lambda=0)" if lam == 0.0 else f"PI(lambda_pde={lam})"
+            recs = _run_one(don_df, folds, [1, 2, 3, 4], lambda_pde=lam, lambda_term=0.0, data_frac=1.0,
+                             loss_type="mae", epochs=epochs, patience=patience, batch_size=batch_size,
+                             n_col=n_col, tag=tag, seed=seed, cache_path=CACHE_PATH_V2)
+            all_records.extend(recs)
+
+    # lambda별로 (seed별 pooled R2)의 평균으로 최적 lambda 선정
+    mean_r2_by_lam = {}
+    for lam in LAMBDA_GRID:
+        per_seed = []
+        for seed in seeds:
+            recs = [r for r in all_records if r["lambda_pde"] == lam and r.get("seed", C.SEED) == seed]
+            if len(recs) == 4:
+                per_seed.append(summarize_folds(recs)["r2"])
+        mean_r2_by_lam[lam] = float(np.mean(per_seed)) if per_seed else float("-inf")
+    best_lam = max([l for l in LAMBDA_GRID if l > 0], key=lambda l: mean_r2_by_lam[l])
+    log.info(f"lambda별 시드평균 R2: {mean_r2_by_lam}")
+    log.info(f"최적 lambda_pde(양수 중, 다중시드 평균 기준) = {best_lam}")
+    with open(C.OUT_DIR / "_pi_deeponet_best_lambda_v2.json", "w", encoding="utf-8") as f:
+        json.dump({"best_lambda_pde": best_lam}, f)
+    return all_records, best_lam
+
+
+def _data_efficiency_v2(don_df, folds, best_lam, epochs, patience, batch_size, n_col, seeds):
+    """§4: 데이터효율(25/50/100%) plain vs PI(best_lam) 다중시드 재평가."""
+    log.info(f"=== v2: 데이터효율 다중시드({seeds}) 재평가 (best_lambda_pde={best_lam}) ===")
+    eff_records = []
+    for seed in seeds:
+        for frac in DATA_FRAC_GRID:
+            for lam, kind in [(0.0, "plain"), (best_lam, "PI")]:
+                tag = f"dataeff_{kind}_frac{frac}"
+                recs = _run_one(don_df, folds, [1, 2, 3, 4], lambda_pde=lam, lambda_term=0.0, data_frac=frac,
+                                 loss_type="mae", epochs=epochs, patience=patience, batch_size=batch_size,
+                                 n_col=n_col, tag=tag, seed=seed, cache_path=CACHE_PATH_V2)
+                eff_records.extend(recs)
+    return eff_records
+
+
+def _seed_summary(records, seeds, group_seed_key="seed"):
+    """fold-pool(seed별) -> 시드간 mean/std. '재현성(같은시드 2회 일치) != 강건성(다른시드 분산)'."""
+    from .metrics import summarize_folds
+    per_seed = []
+    for seed in seeds:
+        recs = [r for r in records if r.get(group_seed_key, C.SEED) == seed]
+        if len(recs) == 4:
+            per_seed.append(summarize_folds(recs))
+    if not per_seed:
+        return None
+    out = {"n_seeds": len(per_seed)}
+    for k, label in [("r2", "R2"), ("mape", "MAPE"), ("bp_error", "bp_error"), ("spearman", "Spearman")]:
+        vals = [p[k] for p in per_seed]
+        out[f"{label}_mean"] = float(np.mean(vals))
+        out[f"{label}_std"] = float(np.std(vals))
+    return out
+
+
+def _build_comparison_tables_v2(seeds):
+    cache = _load_cache(CACHE_PATH_V2)
+    if not cache:
+        raise RuntimeError("v2 캐시가 비어 있음 - 먼저 --lambda-scan-v2를 실행하세요.")
+
+    grid_records = [r for r in cache if r.get("data_frac") == 1.0
+                     and str(r.get("tag", "")).startswith(("plain", "PI("))]
+    tags = sorted(set(r["tag"] for r in grid_records),
+                  key=lambda t: (0, 0) if t.startswith("plain") else (1, float(t.split("=")[-1].rstrip(")"))))
+    rows = []
+    for tag in tags:
+        recs = [r for r in grid_records if r["tag"] == tag]
+        summ = _seed_summary(recs, seeds)
+        if summ is None:
+            continue
+        rows.append({"tag": tag, "lambda_pde": recs[0]["lambda_pde"], "n_seeds": summ["n_seeds"],
+                      "R2_mean": round(summ["R2_mean"], 4), "R2_std": round(summ["R2_std"], 4),
+                      "MAPE_mean": round(summ["MAPE_mean"], 4), "MAPE_std": round(summ["MAPE_std"], 4),
+                      "bp_error_mean": round(summ["bp_error_mean"], 1), "bp_error_std": round(summ["bp_error_std"], 1),
+                      "Spearman_mean": round(summ["Spearman_mean"], 4), "Spearman_std": round(summ["Spearman_std"], 4)})
+    comparison_df = pd.DataFrame(rows)
+    comparison_df.to_csv(C.OUT_DIR / "pi_deeponet_comparison_v2.csv", index=False, encoding="utf-8-sig")
+    log.info("\nplain vs PI(lambda_pde 그리드) v2 비교표(시드 mean+-std):\n" + comparison_df.to_string(index=False))
+
+    eff_records = [r for r in cache if str(r.get("tag", "")).startswith("dataeff_")]
+    eff_tags = sorted(set(r["tag"] for r in eff_records))
+    rows2 = []
+    for tag in eff_tags:
+        recs = [r for r in eff_records if r["tag"] == tag]
+        summ = _seed_summary(recs, seeds)
+        if summ is None:
+            continue
+        kind = "PI" if "_PI_" in tag else "plain"
+        frac = float(tag.split("frac")[-1])
+        rows2.append({"tag": tag, "kind": kind, "data_frac": frac, "lambda_pde": recs[0]["lambda_pde"],
+                       "n_seeds": summ["n_seeds"],
+                       "R2_mean": round(summ["R2_mean"], 4), "R2_std": round(summ["R2_std"], 4),
+                       "MAPE_mean": round(summ["MAPE_mean"], 4), "MAPE_std": round(summ["MAPE_std"], 4),
+                       "bp_error_mean": round(summ["bp_error_mean"], 1), "bp_error_std": round(summ["bp_error_std"], 1),
+                       "Spearman_mean": round(summ["Spearman_mean"], 4), "Spearman_std": round(summ["Spearman_std"], 4)})
+    dataeff_df = pd.DataFrame(rows2).sort_values(["kind", "data_frac"])
+    dataeff_df.to_csv(C.OUT_DIR / "pi_deeponet_data_efficiency_v2.csv", index=False, encoding="utf-8-sig")
+    log.info("\n데이터효율 v2 비교표(시드 mean+-std):\n" + dataeff_df.to_string(index=False))
+    return comparison_df, dataeff_df
+
+
+def _reproducibility_check_v2(best_lam, epochs, patience, batch_size, n_col, fold=4):
+    log.info(f"=== v2 재현성 검증: lambda_pde={best_lam}, fold={fold}, epochs={epochs} 별도 프로세스 2회 ===")
+    import os
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    outs = []
+    for i in range(2):
+        out_path = C.OUT_DIR / f"_pi_repro_run{i + 1}_v2.json"
+        cmd = [sys.executable, "-m", "els_hedging_v1.pi_deeponet", "--repro-run",
+               "--lambda-pde", str(best_lam), "--fold", str(fold),
+               "--epochs", str(epochs), "--patience", str(patience),
+               "--batch-size", str(batch_size), "--n-col", str(n_col), "--out", str(out_path)]
+        subprocess.run(cmd, check=True, env=env)
+        with open(out_path, encoding="utf-8") as f:
+            outs.append(json.load(f))
+    keys = ["r2", "mae", "rmse", "mape", "bp_error", "spearman"]
+    match_flags = {k: (outs[0][k] == outs[1][k]) for k in keys}
+    all_match = all(match_flags.values())
+    df = pd.DataFrame([
+        {"run": "run1", **{k: outs[0][k] for k in keys}},
+        {"run": "run2", **{k: outs[1][k] for k in keys}},
+        {"run": "exact_match", **match_flags},
+    ])
+    df.to_csv(C.OUT_DIR / "pi_deeponet_reproducibility_check_v2.csv", index=False, encoding="utf-8-sig")
+    log.info(f"v2 재현성 검증 완료(전부 일치={all_match}):\n" + df.to_string(index=False))
+    return all_match, df
+
+
+def _make_figures_v2(best_lam, epochs, patience, batch_size, n_col, seeds, fold=4):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.family"] = ["Malgun Gothic", "AppleGothic", "sans-serif"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    from .metrics import summarize_folds
+    fig_dir = C.OUT_DIR / "figures"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    cache = _load_cache(CACHE_PATH_V2)
+
+    # 1) 데이터효율 곡선(시드 mean +- std 에러바)
+    eff_records = [r for r in cache if str(r.get("tag", "")).startswith("dataeff_")]
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for kind, marker in [("plain", "o"), ("PI", "s")]:
+        fracs, means, stds = [], [], []
+        for frac in DATA_FRAC_GRID:
+            recs = [r for r in eff_records if f"_{kind}_frac{frac}" in r["tag"]]
+            summ = _seed_summary(recs, seeds)
+            if summ:
+                fracs.append(frac); means.append(summ["R2_mean"]); stds.append(summ["R2_std"])
+        if fracs:
+            ax.errorbar(fracs, means, yerr=stds, marker=marker, capsize=4, label=kind)
+    ax.set_xlabel("L_data에 사용한 MC 라벨 비율"); ax.set_ylabel("이론가(Stage-1) pooled R2 (시드 mean+-std)")
+    ax.set_title(f"데이터효율 v2(epochs={epochs},patience={patience}): plain vs PI-DeepONet"); ax.legend()
+    fig.tight_layout()
+    fig.savefig(fig_dir / "pi_deeponet_v2_01_data_efficiency.png", dpi=130)
+    plt.close(fig)
+
+    # 2) 학습곡선 대조 (fold2 vs fold4, plain, 새 recipe로 재확인 - epoch단위 val_loss/test_r2 궤적)
+    don_df = _load_don()
+    from .splits import walk_forward_folds
+    folds = walk_forward_folds(len(don_df))
+
+    log.info("그림용: plain(lambda=0) fold2 vs fold4 학습곡선 재확인(새 recipe)")
+    curves = {}
+    for fold_id in [2, 4]:
+        tr_idx, te_idx = folds[fold_id - 1]
+        train_df = don_df.iloc[tr_idx].reset_index(drop=True)
+        test_df = don_df.iloc[te_idx].reset_index(drop=True)
+        model, scaler, pde_log = train_pi_deeponet(train_df, target_col="MC", lambda_pde=0.0, lambda_term=0.0,
+                                                      epochs=epochs, patience=patience, batch_size=batch_size,
+                                                      n_col=n_col, verbose=True)
+        pred = predict_pi_deeponet(model, scaler, test_df)
+        from .metrics import compute_metrics
+        r2 = compute_metrics(test_df["MC"], pred)["r2"]
+        curves[fold_id] = (pde_log, r2)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for fold_id, (pde_log, final_r2) in curves.items():
+        epochs_x = [r["epoch"] for r in pde_log]
+        val_y = [r["val_data_loss"] for r in pde_log]
+        ax.plot(epochs_x, val_y, marker="o", ms=3, label=f"fold{fold_id} val_loss(final test R2={final_r2:.3f})")
+    ax.set_xlabel("epoch"); ax.set_ylabel("val L_data(표준화)")
+    ax.set_title(f"v2 recipe(epochs={epochs}) val_loss 궤적: fold2(어려운 국면) vs fold4(정상)")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(fig_dir / "pi_deeponet_v2_02_fold2_vs_fold4_valloss.png", dpi=130)
+    plt.close(fig)
+
+    log.info(f"v2 그림 저장 완료 -> {fig_dir}/pi_deeponet_v2_0{{1,2}}_*.png")
+
+
 def _repro_run_main(args):
     """--repro-run: 단일 config/fold 학습 후 raw(비반올림) 지표를 JSON으로 저장 (재현성 검증용 서브프로세스)."""
     from .metrics import compute_metrics
@@ -679,14 +928,28 @@ def main():
                      help="단일 lambda_pde로 walk-forward 4-fold 실행 + (0이면) 정합체크")
     ap.add_argument("--lambda-scan", action="store_true", help="lambda_pde 그리드 + 데이터효율 실험")
     ap.add_argument("--report", action="store_true", help="비교표·그림·재현성검증 산출")
+    ap.add_argument("--validate-v2", action="store_true",
+                     help="새 recipe(epochs/patience 하향)에서 plain 데이터효율 단조성 우선 확인")
+    ap.add_argument("--lambda-scan-v2", action="store_true",
+                     help="새 recipe + 다중시드로 lambda 그리드/데이터효율 재평가 (--seeds)")
+    ap.add_argument("--report-v2", action="store_true",
+                     help="v2 비교표(시드 mean+-std)·그림·재현성검증 산출")
+    ap.add_argument("--seeds", type=str, default="42,43,44", help="쉼표구분 시드 목록(v2 다중시드용)")
     ap.add_argument("--repro-run", action="store_true", help=argparse.SUPPRESS)  # 내부용(서브프로세스)
     ap.add_argument("--fold", type=int, default=4)
-    ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--patience", type=int, default=15)
+    ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--patience", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--n-col", type=int, default=N_COL_DEFAULT)
     ap.add_argument("--out", type=str, default=None)
     args = ap.parse_args()
+
+    is_v2 = args.validate_v2 or args.lambda_scan_v2 or args.report_v2
+    if args.epochs is None:
+        args.epochs = EPOCHS_DEFAULT if is_v2 else 100
+    if args.patience is None:
+        args.patience = PATIENCE_DEFAULT if is_v2 else 15
+    seeds = [int(s) for s in args.seeds.split(",")]
 
     if args.repro_run:
         _repro_run_main(args)
@@ -697,7 +960,20 @@ def main():
     folds = walk_forward_folds(len(don_df))
     log.info(f"dataset_deeponet 로드: {len(don_df)} rows (MC 재실행 없음, 기존 캐시 재사용)")
 
-    if args.lambda_pde is not None:
+    if args.validate_v2:
+        _validate_monotonicity_v2(don_df, folds, args.epochs, args.patience, args.batch_size, args.n_col,
+                                    seed=seeds[0])
+    elif args.lambda_scan_v2:
+        _, best_lam = _lambda_scan_v2(don_df, folds, args.epochs, args.patience, args.batch_size, args.n_col, seeds)
+        _data_efficiency_v2(don_df, folds, best_lam, args.epochs, args.patience, args.batch_size, args.n_col, seeds)
+    elif args.report_v2:
+        _build_comparison_tables_v2(seeds)
+        best_lam_path = C.OUT_DIR / "_pi_deeponet_best_lambda_v2.json"
+        with open(best_lam_path, encoding="utf-8") as f:
+            best_lam = json.load(f)["best_lambda_pde"]
+        _reproducibility_check_v2(best_lam, args.epochs, args.patience, args.batch_size, args.n_col, fold=args.fold)
+        _make_figures_v2(best_lam, args.epochs, args.patience, args.batch_size, args.n_col, seeds, fold=args.fold)
+    elif args.lambda_pde is not None:
         _consistency_check(don_df, folds, args.lambda_pde, args.epochs, args.patience, args.batch_size, args.n_col)
     elif args.lambda_scan:
         _lambda_scan(don_df, folds, args.epochs, args.patience, args.batch_size, args.n_col)

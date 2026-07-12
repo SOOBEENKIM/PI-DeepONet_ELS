@@ -1,0 +1,7 @@
+﻿config,best_test_r2,best_epoch,final_test_r2_epoch299,degradation_best_to_final,val_loss_epoch0,val_loss_epoch299,val_loss_still_improving_at_end
+fold2_frac1.0_exp0.97,0.8482,14,0.3561,0.492,0.08741,0.01888,True
+fold2_frac0.25_exp0.97,0.9114,58,0.8932,0.0182,0.12032,0.02607,True
+fold2_frac1.0_constant,0.9315,62,0.5792,0.3523,0.08741,0.01727,True
+fold2_frac1.0_plateau,0.9256,22,0.8087,0.1168,0.08741,0.01696,True
+fold4_frac1.0_exp0.97,0.9864,246,0.9864,0.0,0.08082,0.02042,True
+fold4_frac0.25_exp0.97,0.9829,124,0.9828,0.0001,0.10307,0.02723,True

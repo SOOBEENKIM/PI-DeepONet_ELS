@@ -1,0 +1,5 @@
+﻿tag,lambda_pde,n_seeds,R2_mean,R2_std,MAPE_mean,MAPE_std,bp_error_mean,bp_error_std,Spearman_mean,Spearman_std
+plain(lambda=0),0.0,3,0.9277,0.0334,0.0049,0.001,47.5,9.8,0.9769,0.0078
+PI(lambda_pde=0.01),0.01,3,0.9572,0.009,0.0042,0.0004,40.3,4.2,0.9847,0.0017
+PI(lambda_pde=0.1),0.1,3,0.8968,0.0718,0.0055,0.0016,52.9,14.8,0.9692,0.0193
+PI(lambda_pde=1.0),1.0,3,0.9082,0.0472,0.0054,0.0012,51.9,11.5,0.971,0.0156
