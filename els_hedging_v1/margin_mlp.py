@@ -70,6 +70,9 @@ class MarginEncoder:
 def train_margin_mlp(train_df, target_col="resid", val_frac=0.1, epochs=200, lr=1e-3,
                       batch_size=512, patience=20, grad_clip=5.0, lr_gamma=0.97,
                       shuffle_split=True, seed=C.SEED, verbose=False):
+    # 재현성 픽스: 모듈 top-level 1회 시딩만으로는 fold/호출 순서에 따라 결과가 갈림
+    # (다른 torch 모델이 그 사이에 얼마나 난수를 소비했는지에 좌우됨) - 매 호출 시작부에서 재시딩.
+    torch.manual_seed(seed)
     n = len(train_df)
     n_val = max(int(n * val_frac), 1)
     if shuffle_split:

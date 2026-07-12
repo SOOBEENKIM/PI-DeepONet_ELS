@@ -126,6 +126,9 @@ def train_deeponet(train_df, target_col="MC", val_frac=0.1, epochs=200, lr=1e-3,
     미래참조는 무방(§V1_피드백반영_지시서 1.5). test fold 자체는 항상 미래로 유지되므로 룩어헤드 아님.
     loss_type: 'mse'|'mae'|'mape' - 셋 다 실스케일에서 계산해 직접 비교 가능.
     """
+    # 재현성 픽스: 모듈 top-level 1회 시딩만으로는 fold/호출 순서에 따라 결과가 갈림
+    # (다른 torch 모델이 그 사이에 얼마나 난수를 소비했는지에 좌우됨) - 매 호출 시작부에서 재시딩.
+    torch.manual_seed(seed)
     n = len(train_df)
     n_val = max(int(n * val_frac), 1)
     if shuffle_split:

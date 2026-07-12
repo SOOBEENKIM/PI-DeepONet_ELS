@@ -1,0 +1,16 @@
+fold,model,run1_r2,run2_r2,exact_match
+1,stage1_deeponet_alone,0.9838787984,0.9838787984,True
+1,final_theory_mlp,0.9838215067,0.9838215067,True
+1,final_theory_xgb,0.9794461562,0.9794461562,True
+2,stage1_deeponet_alone,0.8374854584,0.8374854584,True
+2,final_theory_mlp,0.8277517985,0.8277517985,True
+2,final_theory_xgb,0.8474271741,0.8474271741,True
+3,stage1_deeponet_alone,0.9428785526,0.9428785526,True
+3,final_theory_mlp,0.9395319291,0.9395319291,True
+3,final_theory_xgb,0.9522425081,0.9522425081,True
+4,stage1_deeponet_alone,0.9829491408,0.9829491408,True
+4,final_theory_mlp,0.9849133670,0.9849133670,True
+4,final_theory_xgb,0.9860912060,0.9860912060,True
+pooled,stage1_deeponet_alone,0.9367979876,0.9367979876,True
+pooled,final_theory_mlp,0.9340046503,0.9340046503,True
+pooled,final_theory_xgb,0.9413017611,0.9413017611,True
